@@ -25,7 +25,26 @@ var appengine = startEngine.MyProcess([
         killSignal: 'SIGTERM'
     }, 
     {
-        color: chalk.green
+        color: chalk.green,
+        filter(line, index, isLast) {
+            if (line.match(/extraneous nonsense/)) {
+                return false; // to totally ignore the line
+            }
+            if (line.match(/modifying file/) && !this.modifiying) {
+                this.modifying = true;
+                this.modifiedCount = 0;
+            }
+            if (this.modifying && (!line.match(/modifiying file/) || isLast)) {
+                this.modifying = false;
+                line = 'Modified ' + this.modifiedCount;
+            } else if (this.modifiying) {
+                if (this.modifiying) {
+                    this.modifiedCount++;
+                    return false;
+                }
+            }
+            return line;
+        }
     });
 var media = startEngine.MyProcess(
     'broccoli-build.js',

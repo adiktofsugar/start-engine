@@ -1,6 +1,59 @@
 var async = require('async');
 var forever = require('forever');
 
+function processTextAsLines(text, processLine) {
+    if (!processLine) {
+        processLine = function (line, index, isLast) {
+            return line;
+        };
+    }
+    var reg = /(.*?)(\n\r|\r\n|\n|\r)/g;
+    var match;
+    var nextMatch;
+    var line;
+    var processLineResult;
+    var index = 0;
+    var newline;
+    var newText = '';
+    var isLast = false;
+    match = reg.exec(text)
+    while (match) {
+        nextMatch = reg.exec(text);
+        isLast = nextMatch == null;
+        
+        line = match[1];
+        newline = match[2];
+        processLineResult = processLine(line, index, isLast);
+        if (processLineResult !== false) {
+            if (!(processLineResult instanceof Array)) {
+                processLineResult = [processLineResult];
+            }
+            processLineResult.forEach(function (lineProcessed) {
+                newText += lineProcessed + newline;
+            });
+        }
+        match = nextMatch;
+        index++;
+    }
+    return newText;
+}
+
+var filterId = 0;
+function MyProcessFilter(filterFn) {
+    this.id = filterId++;
+    function run(text) {
+        if (!filterFn) {
+            return text;
+        }
+        var self = this;
+        return processTextAsLines(text, function (line, index, isLast) {
+            return filterFn.call(self, line, index, isLast);
+        });
+        
+    }
+    this.run = run;
+}
+
 function MyProcess(script, startOptions, options) {
     if (!(this instanceof MyProcess)) {
         return new MyProcess(script, startOptions, options);
@@ -32,8 +85,14 @@ function MyProcess(script, startOptions, options) {
         return header;
     }
 
+    var processFilter = new MyProcessFilter(options.filter);
+    function filter(data) {
+        return processFilter.run(data);
+    }
+
     this.monitor = monitor;
     this.getHeader = getHeader;
+    this.filter = filter;
 }
 MyProcess.titleWidth = 10;
 
@@ -81,13 +140,12 @@ function start(myProcesses, callback) {
         var text = (data instanceof Buffer)
             ? data.toString('utf-8')
             : String(data);
-        var reg = /.*?(\n\r|\r\n|\n|\r)/g;
-        var newText = header + ' ';
-        var result;
-        while (result = reg.exec(text)) {
-            newText = newText + result[0];
-        }
-        return newText;
+        return processTextAsLines(text, function (line, index) {
+            if (index === 0) {
+                line = header + ' ' + line;
+            }
+            return line;
+        });
     }
     
     myProcesses.forEach(function (myProcess) {
@@ -96,7 +154,9 @@ function start(myProcesses, callback) {
         function writeDataFn(stream) {
             return function (data) {
                 var header = myProcess.getHeader();
-                stream.write(prependData(data, header));
+                var dataWithHeader = prependData(data, header);
+                var filteredData = myProcess.filter(dataWithHeader);
+                stream.write(filteredData);
             }
         }
         
