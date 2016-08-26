@@ -1,7 +1,8 @@
 var async = require('async');
 var forever = require('forever');
 
-function processTextAsLines(text, processLine) {
+function processTextAsLines(text, processLine, callback) {
+    callback = callback || function () {};
     if (!processLine) {
         processLine = function (line, index, isLast) {
             return line;
@@ -35,20 +36,25 @@ function processTextAsLines(text, processLine) {
         match = nextMatch;
         index++;
     }
-    return newText;
+
+    // the goal is to do something that'll let me wait a bit to make sure it's
+    // really the end of the stream output, so i can get a summary
+
+    callback(newText);
 }
 
 var filterId = 0;
 function MyProcessFilter(filterFn) {
     this.id = filterId++;
-    function run(text) {
+    function run(text, callback) {
+        callback = callback || function () {};
         if (!filterFn) {
-            return text;
+            return callback(text);
         }
         var self = this;
-        return processTextAsLines(text, function (line, index, isLast) {
+        processTextAsLines(text, function (line, index, isLast) {
             return filterFn.call(self, line, index, isLast);
-        });
+        }, callback);
         
     }
     this.run = run;
@@ -61,12 +67,8 @@ function MyProcess(script, startOptions, options) {
     if (startOptions && !startOptions.silent) {
         startOptions.silent = true;
     }
-    var monitor = forever.start(script, startOptions);
-    var title = monitor.uid;
-    if (title.length > MyProcess.titleWidth) {
-        MyProcess.titleWidth = title.length;
-    }
-
+    var title = '(placeholder)';
+    
     function getHeader() {
         var paddingLen = MyProcess.titleWidth - title.length;
         if (paddingLen < 0) {
@@ -86,13 +88,21 @@ function MyProcess(script, startOptions, options) {
     }
 
     var processFilter = new MyProcessFilter(options.filter);
-    function filter(data) {
-        return processFilter.run(data);
+    function filter(data, callback) {
+        return processFilter.run(data, callback);
     }
 
-    this.monitor = monitor;
+    function start() {
+        var monitor = forever.start(script, startOptions);
+        title = monitor.uid;
+        if (title.length > MyProcess.titleWidth) {
+            MyProcess.titleWidth = title.length;
+        }
+        return monitor;
+    }
     this.getHeader = getHeader;
     this.filter = filter;
+    this.start = start;
 }
 MyProcess.titleWidth = 10;
 
@@ -136,27 +146,29 @@ function stop(callback) {
 function start(myProcesses, callback) {
     callback = callback || function () {};
     
-    function prependData(data, header) {
+    function prependData(data, header, callback) {
         var text = (data instanceof Buffer)
             ? data.toString('utf-8')
             : String(data);
-        return processTextAsLines(text, function (line, index) {
+        processTextAsLines(text, function (line, index) {
             if (index === 0) {
                 line = header + ' ' + line;
             }
             return line;
-        });
+        }, callback);
     }
     
     myProcesses.forEach(function (myProcess) {
-        var monitor = myProcess.monitor;
+        var monitor = myProcess.start();
         
         function writeDataFn(stream) {
             return function (data) {
                 var header = myProcess.getHeader();
-                var dataWithHeader = prependData(data, header);
-                var filteredData = myProcess.filter(dataWithHeader);
-                stream.write(filteredData);
+                prependData(data, header, function (dataWithHeader) {
+                    myProcess.filter(dataWithHeader, function (filteredData) {
+                        stream.write(filteredData);
+                    });
+                });
             }
         }
         
